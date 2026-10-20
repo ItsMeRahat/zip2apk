@@ -1,0 +1,13 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.zip2apk.shell'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'PKG_ID'
+        minSdk 24
+        targetSdk 34
+        versionCode VCODE
+        versionName 'VER_NAME'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
