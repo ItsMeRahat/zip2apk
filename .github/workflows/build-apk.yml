@@ -1,0 +1,51 @@
+name: Build APK
+run-name: Build ${{ inputs.job }}
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      J: ${{ inputs.job }}
+      RUN: ${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.7' }
+      - name: Prepare project
+        run: |
+          set -e
+          D=jobs/$J; C=$D/config.json
+          NAME=$(jq -r .appName $C); PKG=$(jq -r .packageId $C); VER=$(jq -r .versionName $C)
+          W=android/app/src/main/assets/www; mkdir -p $W /tmp/w
+          unzip -q $D/site.zip -d $W; rm -rf $W/__MACOSX
+          if [ ! -f $W/index.html ]; then
+            S=$(find $W -name index.html | head -1)
+            [ -n "$S" ] || { echo "No index.html in zip"; exit 1; }
+            cp -r "$(dirname "$S")"/. /tmp/w; rm -rf $W; mkdir -p $W; cp -r /tmp/w/. $W
+          fi
+          R=android/app/src/main/res; mkdir -p $R/drawable $R/values
+          if [ -f $D/icon.png ]; then convert $D/icon.png -resize '192x192^' -gravity center -extent 192x192 $R/drawable/ic_launcher.png
+          else convert -size 192x192 xc:'#4f46e5' $R/drawable/ic_launcher.png; fi
+          printf '<resources><string name="app_name">%s</string></resources>' "$NAME" > $R/values/strings.xml
+          sed -i "s/PKG_ID/$PKG/;s/VER_NAME/$VER/;s/VCODE/$RUN/" android/app/build.gradle
+      - name: Build
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+      - name: Publish release and clean up
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk app.apk
+          gh release create job-$J app.apk --title "$J" --notes "Built by Zip2APK"
+          git rm -rq jobs/$J
+          git -c user.name=bot -c user.email=bot@users.noreply.github.com commit -qm "clean $J"
+          git pull -q --rebase || true
+          git push || true
