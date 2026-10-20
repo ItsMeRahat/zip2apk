@@ -1,0 +1,83 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Zip → APK</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#14151a;--mut:#6b7080;--ac:#4f46e5;--bd:#dfe2ec}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1117;--card:#181b24;--tx:#eceef5;--mut:#8b90a3;--bd:#2a2e3b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;padding:16px}
+main{max-width:480px;margin:auto;background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:20px}
+h1{margin:0 0 4px;font-size:22px}p{color:var(--mut);margin:0 0 12px;font-size:14px}
+label{display:block;font-size:13px;color:var(--mut);margin:12px 0 4px}
+input{width:100%;padding:10px;border:1px solid var(--bd);border-radius:10px;background:transparent;color:var(--tx);font-size:15px}
+button{width:100%;margin-top:16px;padding:13px;border:0;border-radius:10px;background:var(--ac);color:#fff;font-size:16px;font-weight:600}
+button:disabled{opacity:.5}#st{margin-top:16px;font-size:15px;word-break:break-word}
+#st a.dl{display:block;text-align:center;margin-top:8px;padding:13px;border-radius:10px;background:#16a34a;color:#fff;text-decoration:none;font-weight:600}
+details{margin-top:14px;font-size:14px}summary{color:var(--mut)}
+</style></head><body><main>
+<h1>Zip → APK</h1><p>Upload your website ZIP (must contain index.html), then install the APK on your phone.</p>
+<label>Website ZIP</label><input id="zip" type="file" accept=".zip">
+<label>App name</label><input id="name" value="My App">
+<label>Package ID</label><input id="pkg" value="com.example.myapp" autocapitalize="none">
+<label>App icon (PNG, JPG or WebP — optional)</label>
+<div style="display:flex;gap:12px;align-items:center"><img id="prev" width="64" height="64" style="border-radius:14px;background:#4f46e5;flex:none" alt=""><input id="icon" type="file" accept="image/*"></div>
+<button id="go">Build APK</button><div id="st"></div>
+<details id="setup"><summary>GitHub settings (one time)</summary>
+<label>Repo (owner/name)</label><input id="repo" autocapitalize="none">
+<label>GitHub token</label><input id="tok" type="password">
+<p style="margin-top:8px">Saved only in this browser.</p></details>
+</main>
+<script>
+const $=i=>document.getElementById(i),st=m=>$('st').innerHTML=m;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+$('repo').value=localStorage.repo||(location.hostname.endsWith('.github.io')?location.hostname.split('.')[0]+'/'+location.pathname.split('/')[1]:'');
+$('tok').value=localStorage.tok||'';
+if(!localStorage.tok)$('setup').open=true;
+let iconB64=null;
+$('icon').onchange=()=>{
+  const f=$('icon').files[0];iconB64=null;$('prev').removeAttribute('src');if(!f)return;
+  const img=new Image();img.onload=()=>{
+    const c=document.createElement('canvas');c.width=c.height=512;
+    const m=Math.min(img.width,img.height),x=(img.width-m)/2,y=(img.height-m)/2;
+    c.getContext('2d').drawImage(img,x,y,m,m,0,0,512,512);
+    const u=c.toDataURL('image/png');iconB64=u.split(',')[1];$('prev').src=u};
+  img.onerror=()=>{st('Could not read that image. Try a PNG.')};
+  img.src=URL.createObjectURL(f)};
+const b64=f=>new Promise(r=>{const x=new FileReader();x.onload=()=>r(x.result.split(',')[1]);x.readAsDataURL(f)});
+const gh=(p,o={})=>fetch('https://api.github.com/repos/'+localStorage.repo+'/'+p,{...o,headers:{Authorization:'Bearer '+localStorage.tok,Accept:'application/vnd.github+json'}});
+async function put(br,path,content){
+  const r=await gh('contents/'+path,{method:'PUT',body:JSON.stringify({message:'job',content,branch:br})});
+  if(!r.ok)throw new Error('Upload failed ('+r.status+'). Check repo and token.');
+}
+$('go').onclick=async()=>{
+  localStorage.repo=$('repo').value.trim();localStorage.tok=$('tok').value.trim();
+  const z=$('zip').files[0],name=$('name').value.trim(),pkg=$('pkg').value.trim();
+  if(!localStorage.tok||!localStorage.repo)return($('setup').open=true,st('Fill in GitHub settings first.'));
+  if(!z)return st('Choose a ZIP first.');
+  if(!/^[\w .-]{1,30}$/.test(name))return st('App name: letters, numbers, space . _ - only.');
+  if(!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(pkg))return st('Package ID like com.example.app (lowercase).');
+  $('go').disabled=true;
+  try{
+    st('Uploading…');
+    const info=await gh('');if(!info.ok)throw new Error('Cannot access repo. Check repo name and token.');
+    const br=(await info.json()).default_branch;
+    const id=[...crypto.getRandomValues(new Uint8Array(6))].map(x=>x.toString(16).padStart(2,'0')).join('');
+    await put(br,`jobs/${id}/config.json`,btoa(JSON.stringify({appName:name,packageId:pkg,versionName:'1.0.0'})));
+    await put(br,`jobs/${id}/site.zip`,await b64(z));
+    if(iconB64)await put(br,`jobs/${id}/icon.png`,iconB64);
+    const r=await gh('actions/workflows/build-apk.yml/dispatches',{method:'POST',body:JSON.stringify({ref:br,inputs:{job:id}})});
+    if(!r.ok)throw new Error('Could not start build. Is the token allowed Actions: read/write?');
+    for(let i=0;;i++){
+      await sleep(7000);
+      const runs=await(await gh('actions/runs?event=workflow_dispatch&per_page=30')).json();
+      const run=(runs.workflow_runs||[]).find(x=>x.display_title==='Build '+id);
+      if(run&&run.status==='completed'){
+        if(run.conclusion!=='success')return st('❌ Build failed. <a href="'+run.html_url+'" target="_blank">View log</a>');
+        const rel=await(await gh('releases/tags/job-'+id)).json();
+        const a=(rel.assets||[])[0];
+        if(a)return st('✅ Ready!<a class="dl" href="'+a.browser_download_url+'">Download APK</a><p style="margin-top:8px">Open the file, allow “install unknown apps” if asked, and tap Install.</p>');
+      }
+      st('⏳ '+(run?'Building… (2–4 min)':'Waiting for runner…'));
+    }
+  }catch(e){st('❌ '+e.message)}
+  $('go').disabled=false;
+};
+</script></body></html>
